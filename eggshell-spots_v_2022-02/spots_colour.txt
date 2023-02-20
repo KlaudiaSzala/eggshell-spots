@@ -1,0 +1,199 @@
+/*
+__________________________________________________________________________________________________
+	Description: 	This macro measures brightness and colour of spots on eggshells from 
+			multispectral images (.mspec). It works together with the micaToolbox 
+			software by: Troscianko, J. & Stevens, M. (2015) Methods in Ecology 
+			& Evolution 6(11), 1320-1331.
+
+
+	Author: Klaudia Szala
+	Date: 2021-02-21
+
+__________________________________________________________________________________________________
+*/
+
+imageDIR = getDirectory("Select folder containing multispectral images");
+fileList=getFileList(imageDIR);
+mspecList=newArray();
+
+for(i=0; i<fileList.length; i++) // list only mspec files
+	if(endsWith(fileList[i], ".mspec")==1)
+		mspecList = Array.concat(mspecList, fileList[i]); 
+
+
+// IMAGE PROCESSING SETTINGS
+
+	Dialog.create("Image processing settings");
+		Dialog.addMessage("This tool calculates colour of spots");
+		Dialog.addMessage("For pattern analyses all images should be scaled uniformly");
+		Dialog.addNumber("Scale images (px/mm)", 0); // first use scale bar calculator to calculate minimum px/mm in the folder of photos
+		Dialog.addCheckbox("Create human luminance channel", 1);
+		Dialog.addMessage("Which channel to use for creating mask? \n(green or luminance channels are recommended)");
+		Dialog.addNumber("Choose channel (red = 1, green = 2, blue = 3, luminance = 4):", 4);
+		Dialog.addMessage("Enter the radius value for thresholding (creating mask)");
+		Dialog.addNumber("radius:", 20);
+		Dialog.addCheckbox("Enhance contrast of images", 1);
+	Dialog.show();
+
+	scaleVal = Dialog.getNumber();
+	lum = Dialog.getCheckbox();
+	slice = Dialog.getNumber(); //channel used for creating mask
+	R = Dialog.getNumber();
+	contrast = Dialog.getCheckbox();
+	
+	run("Clear Results");
+	
+
+// PREPARE TABLE FOR SAVING RESULTS
+table_name = "Table";
+	table_cols = newArray("Label", "spots_R", "spots_G", "spots_B", "spots_brightness", "spots_Rchroma", "spots_Gchroma", "spots_Bchroma");
+
+	newTable(table_name, table_cols);
+
+	function newTable(table_name, table_cols) {
+		Table.create(table_name);
+		for (i=0; i<table_cols.length; i++) {
+			selectWindow(table_name);
+			Table.set(table_cols[i], 0, 0);
+		}
+		Table.deleteRows(0, 0, table_name);
+	}
+
+
+//BATCH PROCESSING LOOP FOR PHOTOS
+
+for(i=0; i<mspecList.length; i++){
+
+	print("\\Update3:Processing Image " + (i+1) + " of " + mspecList.length);
+	
+	imageString = "select=[" + imageDIR + mspecList[i] + "]";
+	run("Create Stack from Config File", imageString);
+	run("Normalise & Align Multispectral Stack", "normalise curve=[Straight Line] align");
+	
+	//SCALING IMAGE
+	if(scaleVal>0){
+		imageString= "pixels=" + scaleVal;
+		run("Multispectral Image Scaler", imageString);
+	}
+	
+	if (lum==1){
+		run("Human Luminance 32bit");
+		lum_channels = nSlices(); //total number of channels
+		channels = lum_channels - 1;
+	} else {
+		channels = nSlices(); //total number of channels
+	}
+
+	name = getTitle();
+
+
+	//BATCH PROCESSING LOOP FOR PHOTOS
+
+	for (u = 0; u < roiManager("count"); u++) {
+		selectWindow("ROI Manager");
+		roiManager("Select", u); 
+		setBatchMode(true);
+		tStr = getInfo("selection.name");
+		if(startsWith(tStr, "Scale Bar") == false){
+
+		//DUPLICATE STACK FOR COLOUR MEASUREMENTS
+		run("Duplicate...", "title=duplicated_stack duplicate"); 
+		setBackgroundColor(0, 0, 0); 
+		run("Clear Outside", "stack");
+		run("Select None");
+		setSlice(slice);
+
+		//CREATE MASK
+		run("Duplicate...", "title=spots_mask"); 
+		run("8-bit"); 
+
+		if(contrast == 1){
+			run("Enhance Contrast...", "saturated=0.1 equalize");
+		}
+
+		run("Auto Local Threshold...", "method=Phansalkar radius=R parameter_1=0 parameter_2=0 white"); 
+		run("Minimum...", "radius=1"); //minimum filter needed during "analyse particles" 
+	
+		//MEASURE COLOUR OF SPOTS
+		run("Set Measurements...", "area mean display redirect=duplicated_stack decimal=3"); 	
+
+		for (o = 1; o < channels+1; o++) {
+			selectWindow("duplicated_stack");
+			setSlice(o);
+			selectWindow("spots_mask");
+			//run("Analyze Particles...", "  show=Nothing exclude clear summarize");  //without showing outlines
+			run("Analyze Particles...", "exclude summarize");
+		}
+
+		selectWindow("Summary");
+		summ = getInfo("window.contents");
+
+		summ_row = split(summ, "\n");
+		summ_length = summ_row.length;
+		lineR = split(summ_row[summ_length-3], "\t");
+		lineG = split(summ_row[summ_length-2], "\t");
+		lineB = split(summ_row[summ_length-1], "\t");
+
+		R = (lineR[5]);
+		G = (lineG[5]);
+		B = (lineB[5]);
+
+		RGB = R + G + B;
+		Rchroma = R / RGB;
+		Gchroma = G / RGB;
+		Bchroma = B / RGB;
+
+		selectWindow("Table");
+		row_number = Table.size();
+		
+		Table.set("Label", row_number, name+": "+tStr);
+		Table.set("spots_R", row_number, R)
+		Table.set("spots_G", row_number, G);
+		Table.set("spots_B", row_number, B);
+		Table.set("spots_brightness", row_number, RGB);
+		Table.set("spots_Rchroma", row_number, Rchroma);
+		Table.set("spots_Gchroma", row_number, Gchroma);
+		Table.set("spots_Bchroma", row_number, Bchroma);
+ 
+		selectWindow("duplicated_stack");
+		run("Close");
+		selectWindow("spots_mask");
+		run("Close");
+
+		} //close condition for scale bar
+
+	} //close loop for (ROI)
+
+	Table.update();
+	close();	
+
+} //close loop for photos
+
+selectWindow("ROI Manager");
+run("Close");
+
+
+//SAVING RESULTS
+
+Dialog.create("Information");
+	Dialog.addMessage("Processing finished. Indicate folder, \nwhere results will be saved.");
+Dialog.show();
+
+image_output = getDirectory("Select folder where results will be saved");
+
+Dialog.create("Question");
+	Dialog.addMessage("How to name the file with results?");
+	Dialog.addString("Enter the name:", "results");
+Dialog.show();
+
+results_name = Dialog.getString();
+
+selectWindow("Table");
+saveAs("Table", image_output + results_name + ".xls");
+run("Close");
+selectWindow("Summary");
+run("Close");
+
+Dialog.create("Information");
+	Dialog.addMessage("Results saved in: " + image_output + results_name + ".xls");
+Dialog.show();

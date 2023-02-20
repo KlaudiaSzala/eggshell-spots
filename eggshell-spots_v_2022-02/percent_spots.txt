@@ -1,0 +1,178 @@
+/*
+_____________________________________________________________________________________________________________
+	Description: 	This macro counts percent of spots on eggs from multispectral 
+			images (.mspec). It works together with the micaToolbox software by:
+			Troscianko, J. & Stevens, M. (2015) Methods in Ecology & Evolution
+			6(11), 1320-1331.
+
+	Author: Klaudia Szala
+	Date: 2021-02-13
+
+_____________________________________________________________________________________________________________
+*/
+
+imageDIR = getDirectory("Select folder containing multispectral images");
+fileList=getFileList(imageDIR);
+mspecList=newArray();
+
+for(i=0; i<fileList.length; i++) // list only mspec files
+	if(endsWith(fileList[i], ".mspec")==1)
+		mspecList = Array.concat(mspecList, fileList[i]); 
+
+
+// IMAGE PROCESSING SETTINGS
+
+	Dialog.create("Image processing settings");
+		Dialog.addMessage("For pattern analyses all images should be scaled uniformly");
+		Dialog.addNumber("Scale images (px/mm)", 0); // first use scale bar calculator to calculate minimum px/mm in the folder of photos
+		//Dialog.addNumber("Start processing at file number:", 1);
+		Dialog.addMessage("This macro calculates the sum of white and black pixels \nafter thresholding.");
+		Dialog.addNumber("Enter the radius value for thresholding:", 20);
+		Dialog.addCheckbox("Create human luminance channel", 1);
+		Dialog.addMessage("Which channel to use in the analysis? \n(red = 1, green = 2, blue = 3, luminence = 4)");
+		Dialog.addNumber("Choose slice (green or luminance channels are recommended):", 4);
+		Dialog.addCheckbox("Enhance contrast of images", 1);
+		Dialog.addCheckbox("Turn on batch mode", 1);		
+	Dialog.show();
+
+	scaleVal = Dialog.getNumber();
+	//startNumber = Dialog.getNumber()-1;
+	R = Dialog.getNumber();
+	lum = Dialog.getCheckbox();
+	slice = Dialog.getNumber();
+	contrast = Dialog.getCheckbox();
+	batch = Dialog.getCheckbox();
+	run("Clear Results");
+
+
+// PREPARE TABLE FOR SAVING RESULTS
+table_name = "Table";
+	table_cols = newArray("Label", "area", "background", "spots", "percent_spots");
+
+	newTable(table_name, table_cols);
+
+	function newTable(table_name, table_cols) {
+		Table.create(table_name);
+		for (i=0; i<table_cols.length; i++) {
+			selectWindow(table_name);
+			Table.set(table_cols[i], 0, 0);
+		}
+		Table.deleteRows(0, 0, table_name);
+	}
+
+
+//BATCH PROCESSING LOOP FOR PHOTOS
+
+for(i=0; i<mspecList.length; i++){
+
+	print("\\Update3:Processing Image " + (i+1) + " of " + mspecList.length);
+	
+	imageString = "select=[" + imageDIR + mspecList[i] + "]";
+	run("Create Stack from Config File", imageString);
+	run("Normalise & Align Multispectral Stack", "normalise curve=[Straight Line] align");
+	
+	//SCALING IMAGE
+	if(scaleVal>0){
+	imageString= "pixels=" + scaleVal;
+	run("Multispectral Image Scaler", imageString);
+	}
+
+	if (lum==1){
+		//run("Create Luminance Channel", "v v_0");
+		run("Human Luminance 32bit");
+	}
+	
+	name = getTitle();
+	setSlice(slice);
+	
+
+	//LOOP FOR ROIs
+	for (u=0; u<roiManager("count"); u++) {
+   
+		roiManager("Select", u);
+		tStr = getInfo("selection.name");
+		if(startsWith(tStr, "Scale Bar") == false){
+		setSlice(slice);
+		run("Duplicate...", "title=egg");
+		run("8-bit");
+		setBackgroundColor(0, 0, 0);
+		run("Clear Outside");
+   		
+		//CALCULATING SPOTTINESS OF EGG
+		
+		if(batch == 1){
+			setBatchMode(true);
+		} else {
+		setBatchMode(false);
+		}
+		
+		if(contrast == 1){
+		run("Enhance Contrast...", "saturated=0.1 equalize");
+		}
+
+		
+		run("Auto Local Threshold...", "method=Phansalkar radius=R parameter_1=0 parameter_2=0 white");
+		
+		run("Set Measurements...", "area display redirect=None decimal=3");
+		run("Measure");
+		n = nResults;
+		row_number = n-1;
+		
+		getHistogram(values, counts, 2);
+		white = counts[1];
+		surface = getResult("Area", row_number);
+		spots = surface - white;
+		spottiness = (spots / surface)*100;
+		
+
+		selectWindow("Table");
+		table_row = Table.size();
+		Table.set("Label", table_row, name +": "+ tStr);
+		Table.set("area", table_row, surface);
+		Table.set("background", table_row, white);
+		Table.set("spots", table_row, spots);
+		Table.set("percent_spots", table_row, spottiness);
+
+   		selectWindow("egg");
+		run("Close");
+				
+		} //close condition for scale bar
+		
+	} //close loop for ROIs
+
+Table.update();
+selectWindow(name);
+run("Close");
+
+} //close loop for photos
+
+selectWindow("ROI Manager");
+run("Close");
+selectWindow("Results");
+run("Close");
+
+//SAVING RESULTS
+
+Dialog.create("Information");
+	Dialog.addMessage("Processing finished. Indicate folder, \nwhere results will be saved.");
+Dialog.show();
+
+results_output = getDirectory("Select folder where results will be saved");
+
+Dialog.create("Question");
+	Dialog.addMessage("How to name the file with results?");
+	Dialog.addString("Enter the name:", "results");
+Dialog.show();
+
+results_name = Dialog.getString();
+
+selectWindow("Table");
+saveAs("Table", results_output + results_name + ".xls");
+close("Table");
+
+Dialog.create("Information");
+	Dialog.addMessage("Results saved in: " + results_output + results_name + ".xls");
+Dialog.show();
+
+print("\\Update3:Processing finished ");
+print("Results saved in: " + results_output);
