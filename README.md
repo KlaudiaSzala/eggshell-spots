@@ -2,11 +2,11 @@
 
 INSTALLATION
 
-These scripts require installation of ImageJ (Schneider et al. 2012) with micaToolbox plugin (Troscianko & Stevens 2015). To use the scripts directly from ImageJ, you should place them in imagej/plugins folder.
+These scripts require installation of ImageJ (Schneider et al. 2012) with MICA Toolbox plugin (Troscianko & Stevens 2015). To use the scripts directly from ImageJ, you should place them in imagej/plugins folder.
 
 DESCRIPTION
 
-The scripts use normalised digital images created with the micaToolbox software (Troscianko &amp; Stevens 2015). A binary mask needed to cut eggshell's spots from the background is prepared using local thresholding with Phansalkar method (Phansalkar et al. 2011). Green channel is recommended for thresholding, as it match the spectral sensitivity of avian double cones (Spottiswoode & Stevens 2010).
+The scripts use normalised digital images created with the MICA Toolbox software (Troscianko &amp; Stevens 2015). A binary mask needed to cut eggshell's spots from the background is prepared using local thresholding with Phansalkar method (Phansalkar et al. 2011). Green channel is recommended for thresholding, as it match the spectral sensitivity of avian double cones (Spottiswoode & Stevens 2010).
 
 
 - percent_spots: counts percent of spots on eggs from multispectral images (.mspec)
