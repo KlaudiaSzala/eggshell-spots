@@ -7,7 +7,7 @@ INSTALLATION ===================================================================
 
 These scripts require installation of ImageJ 1.54g (Schneider et al. 2012) with MICA Toolbox plugin
 (Troscianko & Stevens 2015, http://www.empiricalimaging.com/). To use the scripts directly from ImageJ,
-you should place them in ImageJ/plugins/spots folder. Then you can access them through plugins -> spots
+you should place them in ImageJ/plugins/spots folder. Then you can access them through plugins -> spots_v2
 in the menu bar.
 
 DESCRIPTION ====================================================================
