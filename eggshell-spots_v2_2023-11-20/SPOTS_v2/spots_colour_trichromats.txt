@@ -1,0 +1,668 @@
+/*
+________________________________________________________________________________________________________________________
+	Description: 	This macro measures brightness and colour of spots and background separately on
+			eggshells from multispectral images (.mspec). It works together with the MICA
+			Toolbox software by: Troscianko, J. & Stevens, M. (2015) Methods in Ecology 
+			& Evolution 6(11), 1320-1331.
+
+			I used equations: A1.8, A1.11, B5, B6 i B7 from Kelber et al. (2003) Biol. Rev. 78, 81–118 
+			and equations: A1.5, A1.6, A1.7 from Renoult et al. (2017) Biol. Rev. 92, 292–315. 
+
+	Author: Klaudia Szala
+	Date: 2021-02-21
+
+	
+	UPDATES:
+
+	2023-10-16: 	I added a possiblity to select visual model. This way spots are extracted from
+			avian double cones channel. If no visual model is selected, camera's green channel
+			is used.
+
+	2023-10-25: 	1) Now a table with temporary results is saved in folder with images.
+			2) I added a step with Gaussian blur to remove uneven illumination of eggs 
+			(darkening of the edges) following Gomez et al. (2018) Behav. Ecol. Sociobiol. 72: 142.
+			As it turned out it also improves detection of paler spots.
+			3) I discarded enhancing contrast option.
+			4) I changed the condition to check if ROI's name starts with "egg" to omit all ROIs
+			that are not eggs, not only scale bar.
+			5) Script now calculates colour for both spots and background without spots.
+			
+	2023-10-27:	1) Now, apart from measuring colour from normalised images or cone catches of a selected
+			visual system, opponency channels (X and Y) and Saturation are measured following 
+			Receptor Noise Limited models (Vorobyev and Osorio 1998 Proc. R. Soc. Lond. B 265: 351-358)
+			for visual systems or coordinates and saturation in Maxwell triangle (Kelber et al. 2003
+			Biol. Rev. Cambridge Philos. Soc. 78: 81-118) for normalised images (basing on average
+			values for spots and background separately).
+			2) I also added contrast between spots and background measured as Euclidian distance either
+			in Maxwell triangle or using RNL models.
+
+	2023-10-30:	1) I added a possibility to customise scale of Gaussian blur and of selection shrinking.
+
+	2023-11-09:	1) Some changes in how achromatic contrast is calculated. When no visual model is selected
+			it is still absolute difference between spots' and background brightness. When visual model
+			is selected achromatic contrast (dL) is calculated using equation 7 in Siddiqi et al. (2004)
+			J.Exp.Biol. 207:2471-2485 with Weber fraction = 0.05.
+			2) Table with results is saved as csv instead of xls.
+
+_______________________________________________________________________________________________________________________
+*/
+
+imageDIR = getDirectory("Select folder containing multispectral images");
+fileList=getFileList(imageDIR);
+mspecList=newArray();
+
+for(i=0; i<fileList.length; i++) // list only mspec files
+	if(endsWith(fileList[i], ".mspec")==1)
+		mspecList = Array.concat(mspecList, fileList[i]); 
+
+
+// LISTING CONE CATCH MODELS =====================================================================================
+
+	modelPath = getDirectory("plugins")+"Cone Models";
+
+	modelList=getFileList(modelPath);
+
+	modelNames = newArray("None");
+
+	for(i=0; i<modelList.length; i++){
+		if(endsWith(modelList[i], ".class")==1 && modelList[i] != "Human_Luminance_32bit.class")
+			modelNames = Array.concat(modelNames,replace(modelList[i],".class",""));
+		if(endsWith(modelList[i], ".CLASS")==1 && modelList[i] != "Human_Luminance_32bit.class")
+			modelNames = Array.concat(modelNames,replace(modelList[i],".CLASS",""));
+	}
+
+	for(i=0; i<modelNames.length; i++)
+		modelNames[i] = replace(modelNames[i], "_", " ");
+
+
+// IMAGE PROCESSING SETTINGS =======================================================================================
+
+	quantumCatches = newArray("linear", "log-transformed", "hyperbolic-transformed"); // sensu Renoult et al. 2017 Biol. Rev. 92: 292-315 equations: A1.5, A1.6 and A1.7 respectively
+
+	Dialog.create("Image processing settings");
+		Dialog.addMessage("This tool calculates colour of spots and background. \nSpots are detected using either double cones channel for a selected visual system or a camera's green channel.");
+		
+		Dialog.addMessage("The script currently supports only trichromatic visual models. \nSelect the visual system to use:");
+		Dialog.addChoice("Model", modelNames);
+		Dialog.addCheckbox("Calculate coordinates and saturation in trichromatic colour space. If no visual model is selected, then coordinates in the Maxwell triangle are calculated.", 0);
+		Dialog.addMessage("");
+		Dialog.addChoice("transformation of quantum catches:", quantumCatches);
+
+		Dialog.addMessage("For pattern analyses all images should be scaled uniformly. \nIf you don't know minimum px/mm value in your set of photos first use Scale Bar Calculator in MICA Toolbox.");
+		Dialog.addNumber("Scale images (px/mm)", 0); // first use scale bar calculator to calculate minimum px/mm in the folder of photos
+		
+		Dialog.addNumber("Enter the radius value for thresholding:", 50);
+		Dialog.addNumber("Scale of Gaussian blur:", 128);
+		Dialog.addNumber("Shrink selection (% of an egg's width):", 5);
+	Dialog.show();
+
+	visualSystem = Dialog.getChoice();
+	RNL = Dialog.getCheckbox();
+	quantumCatch = Dialog.getChoice();
+	scaleVal = Dialog.getNumber();
+	R = Dialog.getNumber();
+	GaussianBlur = Dialog.getNumber();
+	shrinking = Dialog.getNumber();
+		
+	run("Clear Results");
+
+	
+	if (visualSystem != "None" && RNL == 1){ //condition for RNL models
+		
+	// LIST VISUAL SYSTEM WEBER FRACTIONS ========================================================================
+
+		vsPath = getDirectory("plugins")+"micaToolbox/weberFractions";
+		vsList=getFileList(vsPath);
+		vsNames = newArray();
+		vsNames = Array.concat("Custom", vsNames);
+
+		for(i=0; i<vsList.length; i++){
+			if(endsWith(vsList[i], ".txt")==1)
+				vsNames = Array.concat(vsNames,replace(vsList[i],".txt",""));
+			if(endsWith(vsList[i], ".TXT")==1)
+				vsNames = Array.concat(vsNames,replace(vsList[i],".TXT",""));
+		}
+
+		headings = String.getResultsHeadings;
+		headings = replace(headings, "Label\t", "");
+		headings = replace(headings, " \t", "");
+		headings = split(headings, "\t");
+		if(headings.length == 1)
+			exit("Exiting - there are no data\nOpen the data so that they are in the results window (e.g. open a .csv file)");
+
+		lumWeber = 0.10;
+
+
+		Dialog.create("Select visual system Weber fractions");
+			Dialog.addChoice("Visual system Weber fractions", vsNames);
+			Dialog.addHelp("http://www.empiricalimaging.com/knowledge-base/rnl-xyz-images/");
+		Dialog.show();
+
+		vsChoice = Dialog.getChoice();
+
+		tempString = File.openAsString(vsPath + "/" + vsChoice + ".txt");
+		tempString = split(tempString, "\n");
+
+		channelNames = newArray(tempString.length-1);
+		weberFractions = newArray(tempString.length-1);
+
+		for(i=1; i<tempString.length; i++){
+			row = split(tempString[i], "\t");
+			channelNames[i-1] = row[0];
+			weberFractions[i-1] = parseFloat(row[1]);
+		}
+
+		//Array.print(weberFractions);
+
+		if (weberFractions.length != 3) {
+			exit("The script currently supports only trichromatic visual models.");
+		}
+		
+		weber_lw = weberFractions[0];
+		weber_mw = weberFractions[1];
+		weber_sw = weberFractions[2];
+
+		A_weber = Math.sqrt(1/(Math.pow(weber_mw, 2) + Math.pow(weber_lw, 2)));
+		B_weber = Math.sqrt((Math.pow(weber_mw, 2) + Math.pow(weber_lw, 2)) / (Math.pow(weber_sw*weber_mw, 2) + Math.pow(weber_sw*weber_lw, 2) + Math.pow(weber_mw*weber_lw, 2)));
+		a_weber = Math.pow(weber_mw, 2) / (Math.pow(weber_mw, 2) + Math.pow(weber_lw, 2));
+		b_weber = Math.pow(weber_lw, 2) / (Math.pow(weber_mw, 2) + Math.pow(weber_lw, 2));
+		// some constants that will be needed later for calculating X and Y coords
+	
+	} // condition for Weber fractions
+
+
+// PREPARE TABLE FOR SAVING RESULTS ==================================================================================
+
+table_name = "Table";
+
+if(visualSystem == "None"){
+
+	if(RNL == 1) {	
+
+		table_cols = newArray("Label", "spots_brightness", "spots_Rchroma", "spots_Gchroma", "spots_Bchroma", "spots_X", "spots_Y", "spots_Sat", "bg_brightness", "bg_Rchroma", "bg_Gchroma", "bg_Bchroma", "bg_X", "bg_Y", "bg_Sat", "dL", "dS");
+
+		} else {
+
+		table_cols = newArray("Label", "spots_brightness", "spots_Rchroma", "spots_Gchroma", "spots_Bchroma", "bg_brightness", "bg_Rchroma", "bg_Gchroma", "bg_Bchroma", "dL");
+
+		}
+
+	} else {
+
+	if(RNL == 1) {	
+
+		table_cols = newArray("Label", "spots_lum", "spots_lw", "spots_mw", "spots_sw", "spots_X", "spots_Y", "spots_Sat", "bg_lum", "bg_lw", "bg_mw", "bg_sw", "bg_X", "bg_Y", "bg_Sat", "dL", "dS");
+	
+		} else {
+
+		table_cols = newArray("Label", "spots_lum", "spots_lw", "spots_mw", "spots_sw", "bg_lum", "bg_lw", "bg_mw", "bg_sw", "dL");
+
+		}
+	}	
+	
+
+	newTable(table_name, table_cols);
+
+	function newTable(table_name, table_cols) {
+		Table.create(table_name);
+		for (i=0; i<table_cols.length; i++) {
+			selectWindow(table_name);
+			Table.set(table_cols[i], 0, 0);
+		}
+		Table.deleteRows(0, 0, table_name);
+	}
+
+
+//BATCH PROCESSING LOOP FOR PHOTOS =========================================================================================
+
+for(i=0; i<mspecList.length; i++){
+
+	print("\\Update3:Processing Image " + (i+1) + " of " + mspecList.length);
+	
+	imageString = "select=[" + imageDIR + mspecList[i] + "]";
+	run("Create Stack from Config File", imageString);
+	run("Normalise & Align Multispectral Stack", "normalise curve=[Straight Line] align");
+	
+
+//SCALING IMAGE
+
+	if(scaleVal>0){
+		
+		imageString= "pixels=" + scaleVal;
+		run("Multispectral Image Scaler", imageString);
+	}
+
+	nameNormalised = getTitle();
+
+
+// CONVERT TO CONE CATCH
+	
+	if(visualSystem != "None"){
+		
+		run(visualSystem);
+		setMinAndMax(0, 1);
+		rename(nameNormalised + " " + visualSystem);
+		nameCone = getTitle();
+		selectImage(nameNormalised);
+		close(); // close original image
+			
+	} // close if for cone catch model
+
+
+
+//BATCH PROCESSING LOOP FOR ROIs =========================================================================
+
+	for (u = 0; u < roiManager("count"); u++) {
+		
+		roiManager("Select", u); 
+setBatchMode(true);
+		tStr = getInfo("selection.name");
+		if(startsWith(tStr, "egg") == true){ //measure only eggs
+
+		
+	//DUPLICATE STACK FOR COLOUR MEASUREMENTS ---------------------------------------------------------
+
+		run("Duplicate...", "title=egg_stack duplicate");
+		nChannels = nSlices;
+		w = getWidth();
+		h = getHeight();
+		imageDimension = w*h;
+		shrinkingValue = w*shrinking*(-0.01); //for shrinking of the selection later
+
+		if(visualSystem != "None"){ // select channel for detecting spots
+
+			setSlice(nChannels); // for visual model set dbl channel
+			histMin = 0;
+			histMax = 1;
+
+		 } else {
+
+			setSlice(2); // for images not converted to visual model set green channel
+			histMin = 0;
+			histMax = 100;
+		
+		} // if condition for visual model
+		
+
+	//DETECT SPOTS ---------------------------------------------------------------------------------------
+		
+		run("Duplicate...", "title=egg"); 
+		run("8-bit"); 
+
+		run("Duplicate...", "title=egg_Gaussian");
+		run("Gaussian Blur...", "sigma=GaussianBlur");
+
+		imageCalculator("Subtract", "egg","egg_Gaussian");
+		
+		selectWindow("egg_Gaussian");
+		close();
+
+		selectWindow("egg");
+		
+		run("Auto Local Threshold", "method=Phansalkar radius=R parameter_1=0 parameter_2=0 white"); 
+		run("Enlarge...", "enlarge=shrinkingValue"); // shrink selection to remove background that is treated as spots at the edges
+		setBackgroundColor(0, 0, 0);
+		run("Clear Outside");
+
+		run("Duplicate...", "title=bg_mask");
+		run("Duplicate...", "title=spots_mask");
+		run("Invert");
+
+		selectWindow("egg");
+		close();
+
+		selectWindow("egg_stack");
+		run("Enlarge...", "enlarge=shrinkingValue"); // shrink selection to remove background that is treated as spots at the edges
+		setBackgroundColor(0, 0, 0);
+		run("Clear Outside", "stack");
+		run("Duplicate...", "title=duplicated_stack duplicate");
+		run("Select None");
+
+		selectWindow("egg_stack");
+		close();
+
+	//MEASURE COLOUR OF BACKGROUND ---------------------------------------------------
+
+
+		selectWindow("bg_mask");
+		run("Select None");
+		run("Subtract...", "value=254"); // measured areas have value 1, the rest of pixels: 0
+		bg_values = newArray(nChannels); // array for saving results for background
+
+		for(o = 1; o<nChannels+1; o++) {
+
+			selectWindow("duplicated_stack");
+			setSlice(o);
+
+			imageCalculator("Multiply create 32-bit", "bg_mask","duplicated_stack"); //it important to get results in 32-bits! For 8-bit image all pixels with value <1 have value 1 in resulting image for cone catch images.
+			selectWindow("Result of bg_mask");
+			getHistogram(values, counts, 256, histMin, histMax);
+			col1_sliced = Array.slice(values,1); //remove first element of histogram -> count of zeros
+			col2_sliced = Array.slice(counts,1);
+
+			array_length = col1_sliced.length;
+			v = 0;
+			m = 0;
+			sum_counts = 0;
+			sum_multiplication = 0;
+
+			for(a=0; a<array_length; a++) {
+	
+				v = col2_sliced[a];
+				sum_counts = sum_counts + v; //number of all measured pixels
+
+				m = col1_sliced[a]*col2_sliced[a];
+				sum_multiplication = sum_multiplication + m; //number of pixels multiplied by their value
+	
+				} // close loop for array with histogram results
+
+			selectWindow("Result of bg_mask");
+			close();
+			meanPixelValue = sum_multiplication/sum_counts;
+			bg_values[o-1] = meanPixelValue; // results of iterations stored in bg_values array in the order of channels: R, G, B (or lw, mw, sw, dbl for visual models)
+
+
+			} // close loop for slices
+
+		selectWindow("bg_mask");
+		close();
+
+
+	//MEASURE COLOUR OF SPOTS ---------------------------------------------------
+		
+	selectWindow("spots_mask");
+	run("Select None");
+	run("Subtract...", "value=254");
+	spots_values = newArray(nChannels); // array for saving results for spots
+
+	for(o = 1; o<nChannels+1; o++) {
+
+		selectWindow("duplicated_stack");
+		setSlice(o);
+
+		imageCalculator("Multiply create 32-bit", "spots_mask","duplicated_stack");
+		selectWindow("Result of spots_mask");
+		getHistogram(values, counts, 256, histMin, histMax);
+		col1_sliced = Array.slice(values,1); //remove first element of histogram -> count of zeros
+		col2_sliced = Array.slice(counts,1);
+
+		array_length = col1_sliced.length;
+		v = 0;
+		m = 0;
+		sum_counts = 0;
+		sum_multiplication = 0;
+
+		for(a=0; a<array_length; a++) {
+	
+			v = col2_sliced[a];
+			sum_counts = sum_counts + v;
+
+			m = col1_sliced[a]*col2_sliced[a];
+			sum_multiplication = sum_multiplication + m;
+	
+			} // close loop for array with histogram results
+
+		selectWindow("Result of spots_mask");
+		close();
+
+		meanPixelValue = sum_multiplication/sum_counts;
+		spots_values[o-1] = meanPixelValue; 
+
+
+		} // close loop for slices
+
+	
+	// X AND Y COORDINATES AND SATURATION ------------------------------------------------------------------
+
+		if (RNL == 1) {
+
+	
+			if(visualSystem == "None") {
+
+			// MAXWELL TRIANGLE ------------------------------------------------------
+
+				// spots
+
+				Maxwell_spots_R = spots_values[0];
+				Maxwell_spots_G = spots_values[1];
+				Maxwell_spots_B = spots_values[2];
+				Maxwell_spots_brightness = Maxwell_spots_R + Maxwell_spots_G + Maxwell_spots_B;
+				Maxwell_spots_Rchroma = Maxwell_spots_R/Maxwell_spots_brightness;
+				Maxwell_spots_Gchroma = Maxwell_spots_G/Maxwell_spots_brightness;
+				Maxwell_spots_Bchroma = Maxwell_spots_B/Maxwell_spots_brightness;
+
+				spots_X = (1/Math.sqrt(2))*(Maxwell_spots_Rchroma - Maxwell_spots_Gchroma);
+				spots_Y = (Math.sqrt(2)/Math.sqrt(3))*(Maxwell_spots_Bchroma - ((Maxwell_spots_Rchroma + Maxwell_spots_Gchroma)/2));
+				spots_Sat = Math.sqrt(Math.pow(spots_X, 2) + Math.pow(spots_Y, 2));
+			
+				// background
+
+				Maxwell_bg_R = bg_values[0];
+				Maxwell_bg_G = bg_values[1];
+				Maxwell_bg_B = bg_values[2];
+				Maxwell_bg_brightness = Maxwell_bg_R + Maxwell_bg_G + Maxwell_bg_B;
+				Maxwell_bg_Rchroma = Maxwell_bg_R/Maxwell_bg_brightness;
+				Maxwell_bg_Gchroma = Maxwell_bg_G/Maxwell_bg_brightness;
+				Maxwell_bg_Bchroma = Maxwell_bg_B/Maxwell_bg_brightness;
+
+				bg_X = (1/Math.sqrt(2))*(Maxwell_bg_Rchroma - Maxwell_bg_Gchroma);
+				bg_Y = (Math.sqrt(2)/Math.sqrt(3))*(Maxwell_bg_Bchroma - ((Maxwell_bg_Rchroma + Maxwell_bg_Gchroma)/2));
+				bg_Sat = Math.sqrt(Math.pow(bg_X, 2) + Math.pow(bg_Y, 2));
+
+				// chromatic contrast between spots and background
+
+				chromaticContrast = Math.sqrt(Math.pow((bg_X - spots_X), 2) + Math.pow((bg_Y - spots_Y), 2));
+
+			} else { // if visual system =! "None"
+
+			// RNL MODELS --------------------------------------------------------------
+			
+				//spots
+
+				RNL_spots_lw = Math.log(spots_values[0]);
+				RNL_spots_mw = Math.log(spots_values[1]);
+				RNL_spots_sw = Math.log(spots_values[2]);
+
+				spots_X = A_weber*(RNL_spots_lw - RNL_spots_mw);
+				spots_Y = B_weber*(RNL_spots_sw - (a_weber*RNL_spots_lw + b_weber*RNL_spots_mw));
+				spots_Sat = Math.sqrt(Math.pow(spots_X, 2) + Math.pow(spots_Y, 2));
+
+				// background
+
+				RNL_bg_lw = Math.log(bg_values[0]);
+				RNL_bg_mw = Math.log(bg_values[1]);
+				RNL_bg_sw = Math.log(bg_values[2]);
+
+				bg_X = A_weber*(RNL_bg_lw - RNL_bg_mw);
+				bg_Y = B_weber*(RNL_bg_sw - (a_weber*RNL_bg_lw + b_weber*RNL_bg_mw));
+				bg_Sat = Math.sqrt(Math.pow(bg_X, 2) + Math.pow(bg_Y, 2));
+
+				// chromatic contrast between spots and background
+
+				chromaticContrast = Math.sqrt(Math.pow((bg_X - spots_X), 2) + Math.pow((bg_Y - spots_Y), 2));
+			
+			} // condition for visual system
+
+		} // condition for calculating coordinates
+
+	selectWindow("spots_mask");
+	close();
+	
+	// SAVING RESULTS FOR ROI ---------------------------------------------------
+	
+	Array.print(spots_values);
+	Array.print(bg_values);
+	
+	if(visualSystem != "None"){
+
+		if(quantumCatch == "linear") {
+
+			bg_lw = bg_values[0];
+			bg_mw = bg_values[1];
+			bg_sw = bg_values[2];
+			bg_lum = bg_values[3];
+
+			spots_lw = spots_values[0];
+			spots_mw = spots_values[1];
+			spots_sw = spots_values[2];
+			spots_lum = spots_values[3]; //dbl
+
+		} else if (quantumCatch == "log-transformed") {
+		
+			bg_lw = Math.log(bg_values[0]);
+			bg_mw = Math.log(bg_values[1]);
+			bg_sw = Math.log(bg_values[2]);
+			bg_lum = Math.log(bg_values[3]);
+
+			spots_lw = Math.log(spots_values[0]);
+			spots_mw = Math.log(spots_values[1]);
+			spots_sw = Math.log(spots_values[2]);
+			spots_lum = Math.log(spots_values[3]); //dbl
+
+		} else { //hyperbolic-transformed
+
+			bg_lw = bg_values[0]/(bg_values[0]+1);
+			bg_mw = bg_values[1]/(bg_values[1]+1);
+			bg_sw = bg_values[2]/(bg_values[2]+1);
+			bg_lum = bg_values[3]/(bg_values[3]+1); //dbl
+
+			spots_lw = spots_values[0]/(spots_values[0]+1);
+			spots_mw = spots_values[1]/(spots_values[1]+1);
+			spots_sw = spots_values[2]/(spots_values[2]+1);
+			spots_lum = spots_values[3]/(spots_values[3]+1); //dbl
+
+		} // condition for transformation type of quantum catch
+
+		achromaticContrast = Math.abs((Math.log(bg_values[3]) - Math.log(spots_values[3])) / 0.05); // following eq. 7 in Siddiqi et al. (2004), Weber fraction assumed to be 0.05
+
+		selectWindow("Table");
+		row_number = Table.size();		
+
+		Table.set("Label", row_number, nameNormalised+": "+tStr);
+		Table.set("spots_lum", row_number, spots_lum);
+		Table.set("spots_lw", row_number, spots_lw);
+		Table.set("spots_mw", row_number, spots_mw);
+		Table.set("spots_sw", row_number, spots_sw);
+
+		Table.set("bg_lum", row_number, bg_lum);
+		Table.set("bg_lw", row_number, bg_lw);
+		Table.set("bg_mw", row_number, bg_mw);
+		Table.set("bg_sw", row_number, bg_sw);
+
+		Table.set("dL", row_number, achromaticContrast);
+		
+		if (RNL == 1) {
+
+			Table.set("spots_X", row_number, spots_X);
+			Table.set("spots_Y", row_number, spots_Y);
+			Table.set("spots_Sat", row_number, spots_Sat);
+
+			Table.set("bg_X", row_number, bg_X);
+			Table.set("bg_Y", row_number, bg_Y);
+			Table.set("bg_Sat", row_number, bg_Sat);
+			
+			Table.set("dS", row_number, chromaticContrast);
+		}
+
+
+
+	} else { //if visual system == "None"
+	
+		bg_R = bg_values[0];
+		bg_G = bg_values[1];
+		bg_B = bg_values[2];
+		bg_brightness = bg_R + bg_G + bg_B;
+		bg_Rchroma = bg_R/bg_brightness;
+		bg_Gchroma = bg_G/bg_brightness;
+		bg_Bchroma = bg_B/bg_brightness;		
+		
+		spots_R = spots_values[0];
+		spots_G = spots_values[1];
+		spots_B = spots_values[2];
+		spots_brightness = spots_R + spots_G + spots_B;
+		spots_Rchroma = spots_R/spots_brightness;
+		spots_Gchroma = spots_G/spots_brightness;
+		spots_Bchroma = spots_B/spots_brightness;
+
+		achromaticContrast = Math.abs(bg_brightness - spots_brightness);
+
+		selectWindow("Table");
+		row_number = Table.size();
+		
+		Table.set("Label", row_number, nameNormalised+": "+tStr);
+		Table.set("spots_brightness", row_number, spots_brightness);
+		Table.set("spots_Rchroma", row_number, spots_Rchroma);
+		Table.set("spots_Gchroma", row_number, spots_Gchroma);
+		Table.set("spots_Bchroma", row_number, spots_Bchroma);
+
+		Table.set("bg_brightness", row_number, bg_brightness);
+		Table.set("bg_Rchroma", row_number, bg_Rchroma);
+		Table.set("bg_Gchroma", row_number, bg_Gchroma);
+		Table.set("bg_Bchroma", row_number, bg_Bchroma);
+
+		Table.set("dL", row_number, achromaticContrast);
+
+		if (RNL == 1) {
+
+			Table.set("spots_X", row_number, spots_X);
+			Table.set("spots_Y", row_number, spots_Y);
+			Table.set("spots_Sat", row_number, spots_Sat);
+			
+			Table.set("bg_X", row_number, bg_X);
+			Table.set("bg_Y", row_number, bg_Y);
+			Table.set("bg_Sat", row_number, bg_Sat);
+
+			Table.set("dS", row_number, chromaticContrast);		
+		}
+
+	
+	} // condition for table type 
+
+		saveAs("Table", imageDIR + "Results_spotsColour_temp" + ".csv"); // save temporary results
+		Table.rename("Results_spotsColour_temp.csv", "Table");
+
+		selectWindow("duplicated_stack");
+		close();
+
+	} //close condition for selecting only eggs
+
+	} //close loop for (ROI)
+
+	Table.update();
+
+	if(visualSystem == "None"){
+		selectWindow(nameNormalised);
+		close();
+	} else {
+		selectWindow(nameCone);
+		close();
+	}
+
+} //close loop for photos
+
+selectWindow("ROI Manager");
+run("Close");
+
+
+//SAVING RESULTS ====================================================================================
+
+Dialog.create("Information");
+	Dialog.addMessage("Processing finished. Indicate folder, \nwhere results will be saved.");
+Dialog.show();
+
+image_output = getDirectory("Select folder where results will be saved");
+
+Dialog.create("Question");
+	Dialog.addMessage("How to name the file with results?");
+	Dialog.addString("Enter the name:", "results");
+Dialog.show();
+
+results_name = Dialog.getString();
+
+selectWindow("Table");
+saveAs("Table", image_output + results_name + ".csv");
+run("Close");
+
+Dialog.create("Information");
+	Dialog.addMessage("Results saved in: " + image_output + results_name + ".csv");
+Dialog.show();

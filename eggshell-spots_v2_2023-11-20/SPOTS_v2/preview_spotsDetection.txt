@@ -1,0 +1,338 @@
+/*
+____________________________________________________________________________________________________
+	Description: 	With this macro one can preview the detection of spots 
+			from multispectral images (.mspec) using Phansalkar auto local
+			thresholding method. It works together with the micaToolbox software by:
+			Troscianko, J. & Stevens, M. (2015) Methods in Ecology & Evolution
+			6(11), 1320-1331.
+
+
+	Author: Klaudia Szala
+	Date: 2021-03-04
+
+	UPDATES:
+
+	2023-10-30:	1) I added a possiblity to select visual model. This way spots are extracted from
+			avian double cones channel. If no visual model is selected, camera's green channel
+			is used.
+			2) I added a step with Gaussian blur to remove uneven illumination of eggs 
+			(darkening of the edges) following Gomez et al. (2018) Behav. Ecol. Sociobiol. 72: 142.
+			As it turned out it also improves detection of paler spots.
+			3) I discarded enhancing contrast option.
+			4) I changed the condition to check if ROI's name starts with "egg" to omit all ROIs
+			that are not eggs, not only scale bar.
+			5) I added waitForUser command, to enable zooming the image.
+			6) ROIs can be now preview from an open image or another image can be loaded.
+			7) I added a possibility to customise scale of Gaussian blur and of selection shrinking.
+			8) Rotating eggs requires more work, so I turned it off for now.
+
+	2023-11-18	1) I added a step with scaling images.
+			2) Added possibility to use it with both VIS and UV.
+			
+
+		
+____________________________________________________________________________________________________
+*/
+
+do { //=================================================================== loop for loading images
+
+// CHECK IF ANY IMAGES ARE OPENED ==================================================================
+
+list = getList("image.titles");
+
+if (list.length == 0) {
+	Dialog.create("Information");
+    		Dialog.addMessage("Load an mspec file.");
+	Dialog.show();
+
+	image_path = File.openDialog("Select .mspec file");
+
+	if(endsWith(image_path, ".mspec")!=1){
+		Dialog.create("Macro error");
+			Dialog.addMessage("Function requires .mspec file");
+		Dialog.show();
+	} // condition for mspec
+
+
+	//LOAD MULTISPECTRAL IMAGE
+	
+	imageString = "select=[" + image_path + "]";
+	run("Create Stack from Config File", imageString);
+	run("Normalise & Align Multispectral Stack", "normalise curve=[Straight Line] align");
+	nameNormalised = getTitle();
+
+} else { // check if open image is mspec
+	
+	if(bitDepth() != 32)
+	exit("Requires a 32-bit normalised image. Select an mspec file.");
+
+} //condition for no images opened
+
+name = getTitle();
+
+// SCALING IF DESIRED ====================================================================
+
+Dialog.create("Scaling settings");
+	Dialog.addMessage("Would you like to scale your image? \nIf not, type zero below.");
+	Dialog.addNumber("Scale images (px/mm)", 0); // first use scale bar calculator to calculate minimum px/mm in the folder of photos
+Dialog.show();
+
+scaleVal = Dialog.getNumber();
+
+if(scaleVal>0){
+
+		imageString= "pixels=" + scaleVal;
+		run("Multispectral Image Scaler", imageString);
+		name = getTitle();
+	}
+
+// CONVERT TO CONE CATCH IF DESIRED ======================================================
+
+coneCatchOption = newArray("Yes", "No", "It's already converted");
+
+Dialog.create("Settings");
+    	Dialog.addMessage("Would you like to convert your image \nto a selected visual model first?");
+	Dialog.addChoice("Select option:", coneCatchOption);
+Dialog.show();
+
+coneCatchChoice = Dialog.getChoice();
+
+if (coneCatchChoice == "No") {
+
+	selectWindow(name);
+	setSlice(2); //green channel
+
+	} else if (coneCatchChoice == "It's already converted") {
+
+	selectWindow(name);
+	nChannels = nSlices();
+	setSlice(nChannels); // last is always double cones
+
+	} else {
+
+	// LISTING CONE CATCH MODELS
+
+	modelPath = getDirectory("plugins")+"Cone Models";
+
+	modelList=getFileList(modelPath);
+
+	modelNames = newArray();
+
+	for(i=0; i<modelList.length; i++){
+		if(endsWith(modelList[i], ".class")==1)
+			modelNames = Array.concat(modelNames,replace(modelList[i],".class",""));
+		if(endsWith(modelList[i], ".CLASS")==1)
+			modelNames = Array.concat(modelNames,replace(modelList[i],".CLASS",""));
+	}
+	
+	for(i=0; i<modelNames.length; i++)
+		modelNames[i] = replace(modelNames[i], "_", " ");
+
+
+	// IMAGE PROCESSING SETTINGS
+
+	Dialog.create("Convert Image to Cone Catch");
+		Dialog.addMessage("Select the visual system to use:");
+		Dialog.addChoice("Model", modelNames);
+	Dialog.show();
+
+	visualSystem = Dialog.getChoice();
+	run(visualSystem);
+	setMinAndMax(0, 1);
+	rename(name + " " + visualSystem);
+	nameConverted = getTitle();
+	
+	selectWindow(name);
+	close(); // close normalised image
+	name = nameConverted;
+	
+	selectWindow(name);
+	nChannels = nSlices();
+	setSlice(nChannels); // last is always double cones
+
+} // condition for converting to visual system
+
+
+// SELECT EGG ===========================================================================
+
+countEggs = 0;
+nRois = roiManager("count");
+
+for (u = 0; u < nRois; u++) {
+	roiManager("Select", u); 
+	tStr = getInfo("selection.name");
+	if(startsWith(tStr, "egg") == true){ //measure only eggs
+	countEggs++;
+	
+	} // condition for eggs
+	
+} // for loop for counting eggs
+
+eggs = newArray(countEggs);
+e = 0;
+
+for (u = 0; u < nRois; u++) {
+	
+	roiManager("Select", u); 
+	tStr = getInfo("selection.name");
+	if(startsWith(tStr, "egg") == true){ //measure only eggs
+	eggs[e] = tStr;	
+	e = e+1;
+	
+	} // condition for eggs
+	
+} // for loop for listing eggs
+
+
+
+do { // =================================================== loop for selecting another egg
+
+Dialog.create("Settings");
+		Dialog.addChoice("Select the egg", eggs);
+	Dialog.show();
+
+selectedEgg = Dialog.getChoice();
+
+for (i=0; i<nRois; i++) { // check index of selected egg to select it
+		roiManager("Select", i); 
+		rName = Roi.getName(); 
+		if (matches(rName, selectedEgg)) { 
+			break;
+		} 
+	}  // loop for checking index of selected egg
+
+roiManager("Select", i); 
+
+	
+//SETTINGS
+
+
+/*_____________________________________________________________
+	Dialog.create("Image processing settings");
+		Dialog.addNumber("Enter the radius value for thresholding:", 20);
+		Dialog.addCheckbox("Enhance contrast of images", 1);
+		Dialog.addCheckbox("Create human luminance channel", 1);
+		Dialog.addMessage("Would you like to rotate the ROI?");
+		Dialog.addCheckbox("Rotate", 1);
+		Dialog.addMessage("Which channel to use in the analysis? \n(red = 1, green = 2, blue = 3, luminance = 4)");
+		Dialog.addNumber("Choose slice:", 4);
+	Dialog.show();
+
+	R = Dialog.getNumber();
+	contrast = Dialog.getCheckbox();
+	lum = Dialog.getCheckbox();
+	rotate = Dialog.getCheckbox();
+	slice = Dialog.getNumber();
+	number_slices = nSlices();
+
+	
+	selectWindow(name);	
+_________________________________________________________________*/
+
+//rotating = newArray("Don't rotate", "clockwise", "anti-clockwise");
+
+// SETTINGS
+
+	Dialog.create("Image processing settings");
+		Dialog.addNumber("Enter the radius value for thresholding:", 50);
+		Dialog.addNumber("Scale of Gaussian blur:", 128);
+		Dialog.addNumber("Shrink selection (% of an egg's width):", 5);
+		//Dialog.addChoice("Rotate?", rotating);
+	Dialog.show();	
+
+	R = Dialog.getNumber();
+	GaussianBlur = Dialog.getNumber();
+	shrinking = Dialog.getNumber();
+	//rotate = Dialog.getChoice();
+
+//DUPLICATE ROI AND CREATE BINARY IMAGE ------------------------------------------------------
+	
+	run("Duplicate...", "title=preview");
+	rename(rName);
+	run("8-bit");
+	
+	w = getWidth();
+	h = getHeight();
+	imageDimension = w*h;
+	shrinkingValue = w*shrinking*(-0.01); //for shrinking of the selection later
+
+	setBackgroundColor(0, 0, 0);
+	run("Clear Outside");
+
+	run("Duplicate...", "title=egg_Gaussian");
+	run("Gaussian Blur...", "sigma=GaussianBlur");
+	imageCalculator("Subtract", rName,"egg_Gaussian");
+
+	selectWindow("egg_Gaussian");
+	close();
+
+	selectWindow(rName);
+
+	run("Auto Local Threshold", "method=Phansalkar radius=R parameter_1=0 parameter_2=0 white");
+
+	run("Enlarge...", "enlarge=shrinkingValue"); // shrink selection to remove background that is treated as spots
+	setBackgroundColor(0, 0, 0);
+	run("Clear Outside");
+	run("Select None");
+
+/*__________________________________________________________________________
+	
+	if (rotate != "Don't rotate") {
+
+		run("Clear Results");
+		run("Set Measurements...", "feret's display redirect=None decimal=3");
+		run("Measure");
+		a = getResult("FeretAngle");
+		w = getWidth();
+		h = getHeight();
+
+		if (rotate == "anti-clockwise") { 
+		
+			run("Rotate 90 Degrees Left");
+			run("Select None");
+			if(a>90){
+				b = a - 180;
+				run("Rotate... ", "angle=b grid=0 interpolation=Bilinear");
+				} else {
+				b = a;
+				run("Rotate... ", "angle=b grid=0 interpolation=Bilinear");
+				}
+			} else {
+			run("Select None");
+			b = a - 90;
+			run("Rotate... ", "angle=b grid=0 interpolation=Bilinear");
+			}
+
+	selectWindow("Results");
+	run("Close");
+
+	} //close condition for rotate
+________________________________________________________*/
+	
+	
+//SELECTING ANOTHER ROI
+
+waitForUser("Click OK when you are ready to move on.");
+whatNextOption = newArray("detect spots on another egg in this image", "open another image", "finish for now");
+
+	Dialog.create("Select ROI");
+		Dialog.addMessage("Would you like to preview another egg?");
+		Dialog.addChoice("Let's:", whatNextOption);
+	Dialog.show();
+
+	whatNextChoice = Dialog.getChoice();
+
+	if(whatNextChoice == "detect spots on another egg in this image") {
+		selectWindow(rName);
+		close();
+		selectWindow(name);
+	} else {
+	
+	run("Close All");
+
+	} 
+	
+
+} while (whatNextChoice == "detect spots on another egg in this image"); // close loop within image
+
+} while(whatNextChoice == "open another image"); // close loop for other images

@@ -1,0 +1,360 @@
+/*
+_________________________________________________________________________________________________________
+	Description: This macro counts percent of overexposed (>100%) pixels of eggs from multispectral 
+		images (.mspec) in R, G and B channel separately. It works together with the micaToolbox 
+		software by: Troscianko, J. & Stevens, M. (2015) Methods in Ecology & Evolution	6(11), 
+		1320-1331.
+
+	Author: Klaudia Szala
+	Date: 2023-07-23
+
+	UPDATES:
+
+	2023-11-02: 	1) Now a table with temporary results is saved in folder with images.
+			2) I changed the condition to check if ROI's name starts with "egg" to omit
+			all ROIs that are not eggs, not only scale bar.
+
+	2023-11-15	1) I added possibility to shrink selection of egg.
+			2) I added possibility to scale images.
+
+	2023-11-18	1) I added possibility to measure UV channels.
+
+_________________________________________________________________________________________________________
+*/
+
+imageDIR = getDirectory("Select folder containing multispectral images");
+fileList=getFileList(imageDIR);
+mspecList=newArray();
+
+for(i=0; i<fileList.length; i++) // list only mspec files
+	if(endsWith(fileList[i], ".mspec")==1)
+		mspecList = Array.concat(mspecList, fileList[i]); 
+
+
+// IMAGE PROCESSING SETTINGS
+
+UVOption = newArray("only VIS", "VIS and UV");
+
+	Dialog.create("Image processing settings");
+		Dialog.addMessage("Does your images contain information only in visible light or both visible and UV?");
+		Dialog.addChoice("Select option:", UVOption);
+
+		Dialog.addMessage("Below you can specify how high percent of overexposed \npixels should be to consider an object as overxposed");
+		Dialog.addNumber("Select maximum overexposed percent of pixels:", 0.1);
+		Dialog.addNumber("Shrink selection (% of an egg's width):", 0);
+		Dialog.addNumber("Scale images (px/mm)", 0); // first use scale bar calculator to calculate minimum px/mm in the folder of photos
+		
+	Dialog.show();
+
+	UVChoice = Dialog.getChoice();
+	maxOverexp = Dialog.getNumber();
+	shrinking = Dialog.getNumber();
+	scaleVal = Dialog.getNumber();
+
+
+// PREPARE TABLE FOR SAVING RESULTS
+
+run("Clear Results");
+table_name = "Table";
+
+if(UVChoice == "only VIS") {
+	
+	table_cols = newArray("Label", "pixel_area", "R_pixel_overexposed", "R_percent_overexposed", "R_is_overexposed", "G_pixel_overexposed", "G_percent_overexposed", "G_is_overexposed", "B_pixel_overexposed", "B_percent_overexposed", "B_is_overexposed");
+
+	} else {
+
+	table_cols = newArray("Label", "pixel_area", "R_pixel_overexposed", "R_percent_overexposed", "R_is_overexposed", "G_pixel_overexposed", "G_percent_overexposed", "G_is_overexposed", "B_pixel_overexposed", "B_percent_overexposed", "B_is_overexposed", "UVB_pixel_overexposed", "UVB_percent_overexposed", "UVB_is_overexposed", "UVR_pixel_overexposed", "UVR_percent_overexposed", "UVR_is_overexposed");
+	
+} // condition for UV light
+ 
+	newTable(table_name, table_cols);
+
+	function newTable(table_name, table_cols) {
+		Table.create(table_name);
+		for (i=0; i<table_cols.length; i++) {
+			selectWindow(table_name);
+			Table.set(table_cols[i], 0, 0);
+		}
+		Table.deleteRows(0, 0, table_name);
+	}
+
+
+//BATCH PROCESSING LOOP FOR PHOTOS
+
+for(i=0; i<mspecList.length; i++){
+
+	print("\\Update3:Processing Image " + (i+1) + " of " + mspecList.length);
+	
+	imageString = "select=[" + imageDIR + mspecList[i] + "]";
+	run("Create Stack from Config File", imageString);
+	run("Normalise & Align Multispectral Stack", "normalise curve=[Straight Line] align");
+	
+	if(scaleVal>0){
+
+		imageString= "pixels=" + scaleVal;
+		run("Multispectral Image Scaler", imageString);
+	}
+
+	name = getTitle();
+	nChannels = nSlices();
+
+	//LOOP FOR ROIs
+	for (u=0; u<roiManager("count"); u++) {
+   
+		roiManager("Select", u);
+//setBatchMode(true);
+		tStr = getInfo("selection.name");
+		if(startsWith(tStr, "egg") == true){ //measure only eggs
+		
+		run("Duplicate...", "title=duplicated duplicate");
+		
+		// SHRINKING 
+
+		if (shrinking > 0) {
+			image_w = getWidth();
+			shrinkingValue = image_w*shrinking*(-0.01); //for shrinking of the selection later
+			run("Enlarge...", "enlarge=shrinkingValue");
+		}
+
+		// CALCULATE SURFACE OF SELECTED OBJECT
+
+		run("Set Measurements...", "area display redirect=None decimal=3");
+		run("Measure");
+		n = nResults;
+		row_number = n-1;
+		surface = getResult("Area", row_number);
+		
+		// PREPARE TO MEASURE OVEREXPOSED PIXELS
+
+		selectWindow("duplicated");
+		run("Clear Outside", "stack");
+		run("Select None");
+		threshold = 100; // max pixel value in normalised images is 100, everything above is overexposed
+		w = getWidth();
+		h = getHeight();
+		
+
+		// "LOOP" FOR CHANNELS - CALCULATING NUMBER OF OVEREXPOSED PIXELS
+
+			// RED
+
+			setSlice(1);
+					   		
+			count = 0;
+			for (x = 0; x < w; x++) {
+			for(y = 0; y < h; y++) {
+			v = getPixel(x, y);
+			if (v > threshold)
+ 			count++;
+			
+			} //closes loop for y
+			} // closes loop for x
+		
+			R_pixelOverexposed = count;
+			R_percentOverexposed = (count / surface)*100;
+
+			if(R_percentOverexposed > maxOverexp) {
+				R_isOverexposed = "yes";
+			} else {
+				R_isOverexposed = "no";
+			}
+
+
+			// GREEN
+
+			setSlice(2);
+					   		
+			count = 0;
+			for (x = 0; x < w; x++) {
+			for(y = 0; y < h; y++) {
+			v = getPixel(x, y);
+			if (v > threshold)
+ 			count++;
+			
+			} //closes loop for y
+			} // closes loop for x
+		
+			G_pixelOverexposed = count;
+			G_percentOverexposed = (count / surface)*100;
+
+			if(G_percentOverexposed > maxOverexp) {
+				G_isOverexposed = "yes";
+			} else {
+				G_isOverexposed = "no";
+			}
+
+
+
+			// BLUE
+
+			setSlice(3);
+		
+			count = 0;
+			for (x = 0; x < w; x++) {
+			for(y = 0; y < h; y++) {
+			v = getPixel(x, y);
+			if (v > threshold)
+ 			count++;
+			
+			} //closes loop for y
+			} // closes loop for x
+		
+			B_pixelOverexposed = count;
+			B_percentOverexposed = (count / surface)*100;
+
+			if(B_percentOverexposed > maxOverexp) {
+				B_isOverexposed = "yes";
+			} else {
+				B_isOverexposed = "no";
+			}
+
+			
+			if (UVChoice == "VIS and UV") {
+
+
+			// UVB
+
+			setSlice(4);
+					   		
+			count = 0;
+			for (x = 0; x < w; x++) {
+			for(y = 0; y < h; y++) {
+			v = getPixel(x, y);
+			if (v > threshold)
+ 			count++;
+			
+			} //closes loop for y
+			} // closes loop for x
+		
+			UVB_pixelOverexposed = count;
+			UVB_percentOverexposed = (count / surface)*100;
+
+			if(UVB_percentOverexposed > maxOverexp) {
+				UVB_isOverexposed = "yes";
+			} else {
+				UVB_isOverexposed = "no";
+			}
+
+
+			// UVR
+
+			setSlice(5);
+					   		
+			count = 0;
+			for (x = 0; x < w; x++) {
+			for(y = 0; y < h; y++) {
+			v = getPixel(x, y);
+			if (v > threshold)
+ 			count++;
+			
+			} //closes loop for y
+			} // closes loop for x
+		
+			UVR_pixelOverexposed = count;
+			UVR_percentOverexposed = (count / surface)*100;
+
+			if(UVR_percentOverexposed > maxOverexp) {
+				UVR_isOverexposed = "yes";
+			} else {
+				UVR_isOverexposed = "no";
+			}
+
+
+			} // condition for UV
+
+
+		// Writing down results
+
+	if(UVChoice == "only VIS") {
+
+		selectWindow("Table");
+		table_row = Table.size();
+		Table.set("Label", table_row, name +": "+ tStr);
+		Table.set("pixel_area", table_row, surface);
+		
+		Table.set("R_pixel_overexposed", table_row, R_pixelOverexposed);
+		Table.set("R_percent_overexposed", table_row, R_percentOverexposed);
+		Table.set("R_is_overexposed", table_row, R_isOverexposed);
+
+		Table.set("G_pixel_overexposed", table_row, G_pixelOverexposed);
+		Table.set("G_percent_overexposed", table_row, G_percentOverexposed);
+		Table.set("G_is_overexposed", table_row, G_isOverexposed);
+
+		Table.set("B_pixel_overexposed", table_row, B_pixelOverexposed);
+		Table.set("B_percent_overexposed", table_row, B_percentOverexposed);
+		Table.set("B_is_overexposed", table_row, B_isOverexposed);
+
+	} else {
+
+		selectWindow("Table");
+		table_row = Table.size();
+		Table.set("Label", table_row, name +": "+ tStr);
+		Table.set("pixel_area", table_row, surface);
+		
+		Table.set("R_pixel_overexposed", table_row, R_pixelOverexposed);
+		Table.set("R_percent_overexposed", table_row, R_percentOverexposed);
+		Table.set("R_is_overexposed", table_row, R_isOverexposed);
+
+		Table.set("G_pixel_overexposed", table_row, G_pixelOverexposed);
+		Table.set("G_percent_overexposed", table_row, G_percentOverexposed);
+		Table.set("G_is_overexposed", table_row, G_isOverexposed);
+
+		Table.set("B_pixel_overexposed", table_row, B_pixelOverexposed);
+		Table.set("B_percent_overexposed", table_row, B_percentOverexposed);
+		Table.set("B_is_overexposed", table_row, B_isOverexposed);
+
+		Table.set("UVB_pixel_overexposed", table_row, UVB_pixelOverexposed);
+		Table.set("UVB_percent_overexposed", table_row, UVB_percentOverexposed);
+		Table.set("UVB_is_overexposed", table_row, UVB_isOverexposed);
+
+		Table.set("UVR_pixel_overexposed", table_row, UVR_pixelOverexposed);
+		Table.set("UVR_percent_overexposed", table_row, UVR_percentOverexposed);
+		Table.set("UVR_is_overexposed", table_row, UVR_isOverexposed);
+	}
+		
+		saveAs("Table", imageDIR + "Results_overexposed_temp" + ".csv"); // save temporary results
+		Table.rename("Results_overexposed_temp.csv", "Table");
+   		
+		selectWindow("duplicated");
+		close();
+				
+		} //close condition for scale bar
+		
+	} //close loop for ROIs
+
+Table.update();
+selectWindow(name);
+close();
+
+} //close loop for photos
+
+selectWindow("ROI Manager");
+run("Close");
+selectWindow("Results");
+run("Close");
+
+//SAVING RESULTS
+
+Dialog.create("Information");
+	Dialog.addMessage("Processing finished. Indicate folder, \nwhere results will be saved.");
+Dialog.show();
+
+results_output = getDirectory("Select folder where results will be saved");
+
+Dialog.create("Question");
+	Dialog.addMessage("How to name the file with results?");
+	Dialog.addString("Enter the name:", "results");
+Dialog.show();
+
+results_name = Dialog.getString();
+
+selectWindow("Table");
+saveAs("Table", results_output + results_name + ".csv");
+close("Table");
+
+Dialog.create("Information");
+	Dialog.addMessage("Results saved in: " + results_output + results_name + ".csv");
+Dialog.show();
+
+print("\\Update3:Processing finished ");
+print("Results saved in: " + results_output);

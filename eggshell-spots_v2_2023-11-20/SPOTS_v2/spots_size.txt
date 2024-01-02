@@ -1,0 +1,264 @@
+/*
+___________________________________________________________________________________________________________________
+	Description: 	This macro measures average size of spots on eggshells from multispectral 
+			images (.mspec). It works together with the micaToolbox software by:
+			Troscianko, J. & Stevens, M. (2015) Methods in Ecology & Evolution
+			6(11), 1320-1331.
+
+	Author: Klaudia Szala
+	Date: 2021-12-14
+
+	UPDATES:
+
+	2023-10-24: 	1) I added a possiblity to select visual model. This way spots are extracted from
+			avian double cones channel. If no visual model is selected, camera's green channel
+			is used.
+			2) I added a step with Gaussian blur to remove uneven illumination of eggs 
+			(darkening of the edges) following Gomez et al. (2018) Behav. Ecol. Sociobiol. 72: 142.
+			As it turned out it also improves detection of paler spots.
+			3) Now a table with temporary results is saved in folder with images.
+			4) I discarded enhancing contrast option.
+			5) Now detected spots are on white background meaning that there is no need for
+			"Exclude on edges" option in "Analyse Particles" -> this approach disregarded spots
+			that "touched" selection of the egg, meaning that especially large spots or 
+			"corona ring" were excluded from measurements. Now all spots are included.
+
+	2023-10-25: 	1) I changed the condition to check if ROI's name starts with "egg" to omit all ROIs
+			that are not eggs, not only scale bar.
+
+	2023-10-30:	1) I added a possibility to customise scale of Gaussian blur and of selection shrinking.
+
+	2023-11-02	1) Detected spots have to be white (255) on black (0) background for analyse particles
+			function to work correctly - now it is fixed.
+
+	2023-11-09:	1) Table with results is saved as csv instead of xls.
+
+	2023-11-19	1) The script works with both visible and UV light (with normalised images and with
+			images converted to tri- or tetrachromatic visual models).
+
+___________________________________________________________________________________________________________________
+*/
+
+imageDIR = getDirectory("Select folder containing multispectral images");
+fileList=getFileList(imageDIR);
+mspecList=newArray();
+
+for(i=0; i<fileList.length; i++) // list only mspec files
+	if(endsWith(fileList[i], ".mspec")==1)
+		mspecList = Array.concat(mspecList, fileList[i]); 
+
+
+// LISTING CONE CATCH MODELS
+
+	modelPath = getDirectory("plugins")+"Cone Models";
+
+	modelList=getFileList(modelPath);
+
+	modelNames = newArray("None");
+
+	for(i=0; i<modelList.length; i++){
+		if(endsWith(modelList[i], ".class")==1 && modelList[i] != "Human_Luminance_32bit.class")
+			modelNames = Array.concat(modelNames,replace(modelList[i],".class",""));
+		if(endsWith(modelList[i], ".CLASS")==1 && modelList[i] != "Human_Luminance_32bit.class")
+			modelNames = Array.concat(modelNames,replace(modelList[i],".CLASS",""));
+	}
+
+	for(i=0; i<modelNames.length; i++)
+		modelNames[i] = replace(modelNames[i], "_", " ");
+
+
+// IMAGE PROCESSING SETTINGS
+
+	Dialog.create("Image processing settings");
+		Dialog.addMessage("This tool calculates average size of spots (in px) using either double cones channel \nfor a selected visual system or a camera's green channel.");
+		
+		Dialog.addMessage("Select the visual system to use:");
+		Dialog.addChoice("Model", modelNames);
+
+		Dialog.addMessage("For pattern analyses all images should be scaled uniformly. \nIf you don't know minimum px/mm value in your set of photo first use Scale Bar Calculator in MICA Toolbox.");
+		Dialog.addNumber("Scale images (px/mm)", 0); // first use scale bar calculator to calculate minimum px/mm in the folder of photos
+		
+		Dialog.addNumber("Enter the radius value for thresholding:", 50);
+		Dialog.addNumber("Scale of Gaussian blur:", 128);
+		Dialog.addNumber("Shrink selection (% of an egg's width):", 5);
+	Dialog.show();
+
+	visualSystem = Dialog.getChoice();
+	scaleVal = Dialog.getNumber();
+	R = Dialog.getNumber();
+	GaussianBlur = Dialog.getNumber();
+	shrinking = Dialog.getNumber();
+			
+	run("Clear Results");
+	
+
+// PREPARE TABLE FOR SAVING RESULTS
+	
+	table_name = "Table";
+	
+	table_cols = newArray("Label", "avg_spot_size");
+	newTable(table_name, table_cols);
+
+	function newTable(table_name, table_cols) {
+		Table.create(table_name);
+		for (i=0; i<table_cols.length; i++) {
+			selectWindow(table_name);
+			Table.set(table_cols[i], 0, 0);
+		}
+		Table.deleteRows(0, 0, table_name);
+	}
+
+
+//BATCH PROCESSING LOOP FOR PHOTOS
+
+for(i=0; i<mspecList.length; i++){
+
+	print("\\Update3:Processing Image " + (i+1) + " of " + mspecList.length);
+	
+	imageString = "select=[" + imageDIR + mspecList[i] + "]";
+	run("Create Stack from Config File", imageString);
+	run("Normalise & Align Multispectral Stack", "normalise curve=[Straight Line] align");
+	
+	//SCALING IMAGE
+	if(scaleVal>0){
+
+		imageString= "pixels=" + scaleVal;
+		run("Multispectral Image Scaler", imageString);
+	}
+	
+	nameNormalised = getTitle();
+
+// CONVERT TO CONE CATCH
+	
+	if(visualSystem != "None"){
+		
+		run(visualSystem);
+		setMinAndMax(0, 1);
+		rename(nameNormalised + " " + visualSystem);
+		nameCone = getTitle();
+		selectImage(nameNormalised);
+		close(); // close original image
+		nChannels = nSlices;
+			
+	} // close if for cone catch model
+
+
+	//LOOP FOR ROIs
+
+	for (u = 0; u < roiManager("count"); u++) {
+		
+		roiManager("Select", u);
+		tStr = getInfo("selection.name");
+		if(startsWith(tStr, "egg") == true){
+		
+	setBatchMode(true);
+
+	//DUPLICATE EGG FOR SPOT SIZE MEASUREMENT
+
+		if(visualSystem != "None"){
+
+			setSlice(nChannels); // for visual model set dbl channel - it's always the last channel
+
+		 } else {
+
+			setSlice(2); // for images not converted to visual model set green channel
+		
+		} // if condition for visual model
+		
+
+		run("Duplicate...", "title=egg");
+		run("8-bit");
+		w = getWidth();
+		shrinkingValue = w*shrinking*(-0.01); //for shrinking of the selection later
+		
+		setBackgroundColor(0, 0, 0); 
+		run("Clear Outside");
+
+		run("Duplicate...", "title=egg_Gaussian");
+		run("Gaussian Blur...", "sigma=GaussianBlur");
+		imageCalculator("Subtract", "egg","egg_Gaussian");
+		
+		selectWindow("egg_Gaussian");
+		close();
+
+		run("Set Measurements...", "area display redirect=None decimal=3");
+				
+	//SPOTS DETECTION
+		
+		selectWindow("egg");
+		run("Auto Local Threshold", "method=Phansalkar radius=R parameter_1=0 parameter_2=0 white"); 
+		run("Enlarge...", "enlarge=shrinkingValue"); // shrink selection to remove background that is treated as spots
+		setBackgroundColor(0, 0, 0);
+		run("Clear Outside"); // clear areas close to edges
+		run("Invert"); //spots have to be white on black bg for analyse particles to work correctly
+		run("Select None");	
+
+	//MEASURE SIZE OF SPOTS
+		
+		run("Analyze Particles...", "  show=Nothing summarize");
+				
+		selectWindow("Summary");
+		summ = getInfo("window.contents");
+		summ_row = split(summ, "\n");
+		summ_length = summ_row.length;
+		line = split(summ_row[summ_length-1], "\t");
+			
+		avg_spotsSize = (line[3]);
+				
+	//SAVE RESULTS IN THE TABLE
+		selectWindow("Table");
+		row_number = Table.size();
+		
+		Table.set("Label", row_number, nameNormalised+": "+tStr);
+		Table.set("avg_spot_size", row_number, avg_spotsSize);
+		 
+		saveAs("Table", imageDIR + "Results_spotSize_temp" + ".csv"); // save temporary results
+		Table.rename("Results_spotSize_temp.csv", "Table");
+
+		selectWindow("egg");
+		close();
+		
+		} //close condition for ROI's name
+
+	} //close loop for (ROI)
+
+	Table.update();
+	
+	if(visualSystem != "None"){ // close image
+		selectWindow(nameCone);
+		close();
+	} else {
+		selectWindow(nameNormalised);
+		close();
+	}	
+
+} //close loop for photos
+
+selectWindow("Summary");
+run("Close");
+selectWindow("ROI Manager");
+run("Close");
+
+
+//SAVING RESULTS
+
+Dialog.create("Information");
+	Dialog.addMessage("Processing finished. Indicate folder, \nwhere results will be saved.");
+Dialog.show();
+
+image_output = getDirectory("Select folder where results will be saved");
+
+Dialog.create("Question");
+	Dialog.addMessage("How to name the file with results?");
+	Dialog.addString("Enter the name:", "results");
+Dialog.show();
+
+results_name = Dialog.getString();
+
+selectWindow("Table");
+saveAs("Table", image_output + results_name + ".csv");
+run("Close");
+
+Dialog.create("Information");
+	Dialog.addMessage("Results saved in: " + image_output + results_name + ".csv");
+Dialog.show();
