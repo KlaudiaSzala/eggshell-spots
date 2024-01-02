@@ -3,14 +3,14 @@ SPOTS v2
 Date: 2023-11-03
 Author: Klaudia Szala
 
-INSTALLATION ===========================================================================================================
+INSTALLATION ====================================================================
 
 These scripts require installation of ImageJ 1.54g (Schneider et al. 2012) with MICA Toolbox plugin
 (Troscianko & Stevens 2015, http://www.empiricalimaging.com/). To use the scripts directly from ImageJ,
 you should place them in ImageJ/plugins/spots folder. Then you can access them through plugins -> spots
 in the menu bar.
 
-DESCRIPTION ============================================================================================================
+DESCRIPTION ====================================================================
 
 The scripts use normalised digital images (.mspec files) created with the MICA Toolbox software (Troscianko &
 Stevens 2015).
@@ -70,7 +70,7 @@ You will need this value in most of functions - just provide it next to "Scale i
 with settings that will pop up when you select one of scripts and the code will do the rest.
 
 
-REFERENCE ==============================================================================================================
+REFERENCE =====================================================================
 
 Gómez, J., Ramo, C., Troscianko, J., Stevens, M., Castro, M., Pérez-Hurtado, A., Liñán-Cembrano,
 Gustavo Amat, J.A., 2018. Individual egg camouflage is influenced by microhabitat selection and use of 
